@@ -25,6 +25,8 @@ def load_models():
     models.clear()
     material_mapping.clear()
 
+    print("🔄 Loading models from:", MODEL_DIR)
+
     for file in os.listdir(MODEL_DIR):
         if file.startswith("arima_") and file.endswith(".pkl"):
             encoded_part = file[len("arima_"):-len(".pkl")]
@@ -35,34 +37,54 @@ def load_models():
                     models[decoded_name] = pickle.load(f)
                 material_mapping[decoded_name] = encoded_part
             except Exception as e:
-                print(f"❌ Failed to load model {file}: {e}")
+                print(f"❌ Failed to load {file}: {e}")
                 continue
 
-# Load models on server start
+    print("✅ Loaded models:")
+    for key in models:
+        print(f" - [{key}]")
+
+# Load models on app start
 load_models()
 
 # === Predict Route ===
 
 @app.route('/predict', methods=['GET'])
 def predict():
-    item_type = request.args.get("type")  # 'material' or 'labor'
+    item_type = request.args.get("type")
     item_name = request.args.get("name")
     steps = int(request.args.get("steps", 1))
 
-    print(f"🔍 Predicting for {item_type}: {item_name}, steps={steps}")
+    print(f"📥 Predict request: type={item_type}, name='{item_name}', steps={steps}")
 
-    if not item_name or item_name not in models:
+    if not item_name:
+        return jsonify({"error": "Missing 'name' parameter"}), 400
+
+    # Normalize input
+    normalized_input = item_name.strip().lower()
+    possible_keys = [
+        normalized_input,
+        f"{item_type}_{normalized_input}",
+    ]
+
+    matched_key = None
+    for key in models:
+        if key.strip().lower() in possible_keys:
+            matched_key = key
+            break
+
+    if not matched_key:
         return jsonify({"error": f"No model found for '{item_name}'"}), 404
 
-    model = models[item_name]
     try:
+        model = models[matched_key]
         forecast = model.forecast(steps=steps)
     except Exception as e:
         return jsonify({"error": f"Model prediction failed: {str(e)}"}), 500
 
     return jsonify({
         "type": item_type,
-        "name": item_name,
+        "name": matched_key,
         "forecast": list(forecast)
     })
 
@@ -71,7 +93,7 @@ def predict():
 @app.route('/train', methods=['GET'])
 def train():
     connection_string = 'postgresql://postgres.viculrdtittnlgikngxg:9ouZiUP4JK6F45ST@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres'
-    
+
     success, results = train_models(connection_string)
 
     # Reload models after training
