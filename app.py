@@ -1,6 +1,4 @@
 from flask import Flask, request, jsonify
-import pandas as pd
-import statsmodels.api as sm
 import pickle
 import os
 import base64
@@ -15,36 +13,52 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-# Load trained models
-models = {}
-material_mapping = {}  # Map encoded names back to original names
+# === Model Loading ===
 
-for file in os.listdir():
-    if file.startswith("arima_") and file.endswith(".pkl"):
-        encoded_material = file.split("_")[1].split(".")[0]
-        try:
-            # Decode the base64 encoded material name
-            material = base64.b64decode(encoded_material.encode()).decode()
-            with open(file, "rb") as f:
-                models[material] = pickle.load(f)
-            material_mapping[material] = encoded_material
-        except:
-            # Skip files that can't be properly decoded
-            continue
+models = {}
+material_mapping = {}  # base64 -> decoded name
+
+MODEL_DIR = "models"
+
+def load_models():
+    global models, material_mapping
+    models.clear()
+    material_mapping.clear()
+
+    for file in os.listdir(MODEL_DIR):
+        if file.startswith("arima_") and file.endswith(".pkl"):
+            encoded_part = file[len("arima_"):-len(".pkl")]
+            try:
+                decoded_name = base64.b64decode(encoded_part.encode()).decode()
+                filepath = os.path.join(MODEL_DIR, file)
+                with open(filepath, "rb") as f:
+                    models[decoded_name] = pickle.load(f)
+                material_mapping[decoded_name] = encoded_part
+            except Exception as e:
+                print(f"❌ Failed to load model {file}: {e}")
+                continue
+
+# Load models on server start
+load_models()
+
+# === Predict Route ===
 
 @app.route('/predict', methods=['GET'])
 def predict():
     item_type = request.args.get("type")  # 'material' or 'labor'
     item_name = request.args.get("name")
-    print(f"Predicting for {item_type}: {item_name}")
     steps = int(request.args.get("steps", 1))
 
-    full_name = f"{item_type}_{item_name}"
-    if full_name not in models:
-        return jsonify({"error": f"{item_type} not found"}), 404
+    print(f"🔍 Predicting for {item_type}: {item_name}, steps={steps}")
 
-    model = models[full_name]
-    forecast = model.forecast(steps=steps)
+    if not item_name or item_name not in models:
+        return jsonify({"error": f"No model found for '{item_name}'"}), 404
+
+    model = models[item_name]
+    try:
+        forecast = model.forecast(steps=steps)
+    except Exception as e:
+        return jsonify({"error": f"Model prediction failed: {str(e)}"}), 500
 
     return jsonify({
         "type": item_type,
@@ -52,31 +66,17 @@ def predict():
         "forecast": list(forecast)
     })
 
+# === Train Route ===
+
 @app.route('/train', methods=['GET'])
 def train():
-    connection_string =  f'postgresql://postgres.viculrdtittnlgikngxg:9ouZiUP4JK6F45ST@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres'
+    connection_string = 'postgresql://postgres.viculrdtittnlgikngxg:9ouZiUP4JK6F45ST@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres'
     
-    # Call the training function
     success, results = train_models(connection_string)
-    
+
     # Reload models after training
-    global models, material_mapping
-    models = {}
-    material_mapping = {}
-    
-    for file in os.listdir():
-        if file.startswith("arima_") and file.endswith(".pkl"):
-            encoded_material = file.split("_")[1].split(".")[0]
-            try:
-                # Decode the base64 encoded material name
-                material = base64.b64decode(encoded_material.encode()).decode()
-                with open(file, "rb") as f:
-                    models[material] = pickle.load(f)
-                material_mapping[material] = encoded_material
-            except:
-                # Skip files that can't be properly decoded
-                continue
-    
+    load_models()
+
     if success:
         return jsonify({
             "status": "success",
